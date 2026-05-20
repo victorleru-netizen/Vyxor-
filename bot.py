@@ -152,4 +152,4 @@ async def cmds(ctx):
 
 
 import os
-bot.run(os.environ.get("MTUwNTk5ODk1NDUxNTY2MDg3MQ.Gg31m8.Wx5-LTt-47b4CdJyAhtB_tHQwOGgRpLMgKJGNY")
+bot.run(os.environ.get("DISCORD_TOKEN"))
