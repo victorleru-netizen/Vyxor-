@@ -3,6 +3,7 @@ from discord.ext import commands
 import asyncio
 import re
 import sqlite3
+import os
 from datetime import datetime, timedelta
 
 # Base de données
@@ -114,42 +115,87 @@ async def unmute(ctx, member: discord.Member):
     except discord.Forbidden:
         await ctx.send("❌ Impossible d'annuler l'exclusion.")
 
-# --- Nouvelle commande : !cmds ---
+@bot.command(name="kick")
+@commands.has_permissions(kick_members=True)
+async def kick(ctx, member: discord.Member, *, reason="Aucune raison"):
+    """Expulse un membre du serveur."""
+    try:
+        await member.kick(reason=reason)
+        await ctx.send(f"👢 {member.mention} a été **expulsé** du serveur. Raison : {reason}")
+    except discord.Forbidden:
+        await ctx.send("❌ Je n'ai pas les permissions nécessaires pour expulser ce membre (vérifie la hiérarchie de mes rôles).")
+
+@bot.command(name="ban")
+@commands.has_permissions(ban_members=True)
+async def ban(ctx, member: discord.Member, *, reason="Aucune raison"):
+    """Bannit définitivement un membre du serveur."""
+    try:
+        await member.ban(reason=reason)
+        await ctx.send(f"🔨 {member.mention} a été **banni définitivement** du serveur. Raison : {reason}")
+    except discord.Forbidden:
+        await ctx.send("❌ Je n'ai pas les permissions nécessaires pour bannir ce membre (vérifie la hiérarchie de mes rôles).")
+
+@bot.command(name="lock")
+@commands.has_permissions(manage_channels=True)
+async def lock(ctx):
+    """Bloque le salon textuel actuel."""
+    try:
+        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
+        await ctx.send("🔒 Ce salon a été fermé par la modération.")
+    except discord.Forbidden:
+        await ctx.send("❌ Je n'ai pas la permission de modifier ce salon.")
+
+@bot.command(name="unlock")
+@commands.has_permissions(manage_channels=True)
+async def unlock(ctx):
+    """Débloque le salon textuel actuel."""
+    try:
+        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
+        await ctx.send("🔓 Ce salon est de nouveau ouvert.")
+    except discord.Forbidden:
+        await ctx.send("❌ Je n'ai pas la permission de modifier ce salon.")
+
+# --- Commande d'aide mise à jour ---
 
 @bot.command(name="cmds")
 async def cmds(ctx):
     """Affiche la liste de toutes les commandes disponibles sur le serveur."""
-    
-    # Création de l'embed
     embed = discord.Embed(
         title="📜 Liste des commandes du serveur",
         description="Voici les commandes que vous pouvez utiliser avec le préfixe `!`",
         color=discord.Color.blue()
     )
     
-    # Section Commandes Membres (Tout le monde peut les voir)
     embed.add_field(
         name="👥 Commandes Générales",
         value="`!cmds` : Affiche cette liste d'aide.",
         inline=False
     )
     
-    # Section Modération (Visible par tout le monde dans l'aide, mais exécutable uniquement par les modos)
     embed.add_field(
         name="🛡️ Commandes de Modération",
         value=(
-            "`!mute <@membre> [minutes] [raison]` : Met un membre en exclusion temporaire (par défaut 10 min).\n"
-            "`!unmute <@membre>` : Retire l'exclusion temporaire d'un membre."
+            "`!mute <@membre> [minutes] [raison]` : Exclut temporairement un membre.\n"
+            "`!unmute <@membre>` : Annule l'exclusion d'un membre.\n"
+            "`!kick <@membre> [raison]` : Expulse un membre du serveur.\n"
+            "`!ban <@membre> [raison]` : Bannit définitivement un membre.\n"
+            "`!lock` : Ferme temporairement le salon actuel.\n"
+            "`!unlock` : Réouvre le salon actuel."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🤖 Systèmes Automatiques",
+        value=(
+            "🛡️ **Anti-Spam** : S'active après 4 messages en 15 secondes.\n"
+            "🤬 **Anti-Insultes** : Supprime automatiquement les grossièretés."
         ),
         inline=False
     )
     
-    # Information sur le système automatique en bas de l'embed
-    embed.set_footer(text="Système anti-spam et anti-insultes actif (3 avertissements = Kick)")
-    
-    # Envoi de l'embed dans le salon où la commande a été tapée
+    embed.set_footer(text="Système Vyxor actif — 3 avertissements = Kick automatique")
     await ctx.send(embed=embed)
 
-
-import os
+# Utilisation de la variable d'environnement configurée sur Render
 bot.run(os.environ.get("DISCORD_TOKEN"))
