@@ -151,4 +151,5 @@ async def cmds(ctx):
     await ctx.send(embed=embed)
 
 
-bot.run("MTUwNTk5ODk1NDUxNTY2MDg3MQ.Gg31m8.Wx5-LTt-47b4CdJyAhtB_tHQwOGgRpLMgKJGNY")
+import os
+bot.run(os.environ.get("MTUwNTk5ODk1NDUxNTY2MDg3MQ.Gg31m8.Wx5-LTt-47b4CdJyAhtB_tHQwOGgRpLMgKJGNY") 
