@@ -103,7 +103,7 @@ async def handle_mute_and_warn(message, reason):
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
 async def mute(ctx, member: discord.Member, minutes: str, *, reason: str):
-    """Mutes a member. Syntax: !mute @member minutes reason (handles '10' or '10m')"""
+    """Mutes a member. Syntax: !mute @member minutes reason"""
     try:
         clean_minutes = int(''.join(filter(str.isdigit, minutes)))
         await member.timeout(timedelta(minutes=clean_minutes), reason=reason)
@@ -163,6 +163,67 @@ async def unlock(ctx):
     except discord.Forbidden:
         await ctx.send("❌ I do not have permissions to unlock this channel.")
 
+@bot.command(name="purge")
+@commands.has_permissions(manage_messages=True)
+async def purge(ctx, amount: int):
+    """Deletes a specified number of messages."""
+    try:
+        deleted = await ctx.channel.purge(limit=amount + 1) # +1 to include the command message itself
+        await ctx.send(f"🗑️ Deleted {len(deleted) - 1} messages.", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send("❌ I do not have permissions to purge messages in this channel.")
+
+@bot.command(name="slowmode")
+@commands.has_permissions(manage_channels=True)
+async def slowmode(ctx, seconds: int):
+    """Changes the slowmode delay of the current channel."""
+    try:
+        await ctx.channel.edit(slowmode_delay=seconds)
+        if seconds == 0:
+            await ctx.send("⏱️ Slowmode has been disabled.")
+        else:
+            await ctx.send(f"⏱️ Slowmode set to {seconds} seconds.")
+    except discord.Forbidden:
+        await ctx.send("❌ I do not have permissions to change slowmode.")
+
+
+# --- Informational Commands ---
+
+@bot.command(name="userinfo")
+async def userinfo(ctx, member: discord.Member = None):
+    """Displays detailed information about a member."""
+    member = member or ctx.author
+    roles = [role.mention for role in member.roles if role != ctx.guild.default_role]
+    
+    embed = discord.Embed(title=f"👤 User Info - {member.name}", color=member.color)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="ID", value=member.id, inline=True)
+    embed.add_field(name="Nickname", value=member.display_name, inline=True)
+    embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d"), inline=False)
+    embed.add_field(name="Joined Server", value=member.joined_at.strftime("%Y-%m-%d"), inline=False)
+    embed.add_field(name=f"Roles ({len(roles)})", value=" ".join(roles) if roles else "None", inline=False)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name="serverinfo")
+async def serverinfo(ctx):
+    """Displays information about the server."""
+    guild = ctx.guild
+    text_channels = len(guild.text_channels)
+    voice_channels = len(guild.voice_channels)
+    
+    embed = discord.Embed(title=f"🏰 Server Info - {guild.name}", color=discord.Color.blue())
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+        
+    embed.add_field(name="Owner", value=guild.owner.mention if guild.owner else "Unknown", inline=True)
+    embed.add_field(name="Server ID", value=guild.id, inline=True)
+    embed.add_field(name="Total Members", value=guild.member_count, inline=True)
+    embed.add_field(name="Channels", value=f"📝 Text: {text_channels} | 🔊 Voice: {voice_channels}", inline=False)
+    embed.add_field(name="Created On", value=guild.created_at.strftime("%Y-%m-%d"), inline=False)
+    
+    await ctx.send(embed=embed)
+
 
 # --- Help Command ---
 
@@ -176,18 +237,23 @@ async def cmds(ctx):
     )
     
     embed.add_field(
-        name="👥 General Commands",
-        value="`!cmds` : Displays this help menu.",
+        name="👥 General & Info Commands",
+        value=(
+            "`!cmds` : Displays this help menu.\n"
+            "`!userinfo [@member]` : Shows detailed info about a user.\n"
+            "`!serverinfo` : Displays useful server statistics."
+        ),
         inline=False
     )
     
     embed.add_field(
         name="🛡️ Moderation Commands",
         value=(
-            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member (handles `10` or `10m`).\n"
+            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member.\n"
             "`!unmute <@member>` : Removes the timeout from a member.\n"
             "`!kick <@member> [reason]` : Kicks a member from the server.\n"
-            "`!ban <@member> [reason]` : Permanently bans a member from the server."
+            "`!ban <@member> [reason]` : Permanently bans a member from the server.\n"
+            "`!purge <number>` : Deletes a specific number of recent messages."
         ),
         inline=False
     )
@@ -196,7 +262,8 @@ async def cmds(ctx):
         name="⚙️ Management Commands",
         value=(
             "`!lock` : Disables sending messages in the current channel.\n"
-            "`!unlock` : Restores message permissions in the current channel."
+            "`!unlock` : Restores message permissions in the current channel.\n"
+            "`!slowmode <seconds>` : Sets a message cooldown for the current channel (use 0 to disable)."
         ),
         inline=False
     )
