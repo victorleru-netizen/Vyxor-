@@ -30,6 +30,9 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# --- Désactivation de l'aide par défaut de Discord ---
+bot.remove_command('help')
+
 @bot.event
 async def on_ready():
     print(f"Bot connected as: {bot.user}")
@@ -168,7 +171,7 @@ async def unlock(ctx):
 async def purge(ctx, amount: int):
     """Deletes a specified number of messages."""
     try:
-        deleted = await ctx.channel.purge(limit=amount + 1) # +1 to include the command message itself
+        deleted = await ctx.channel.purge(limit=amount + 1)
         await ctx.send(f"🗑️ Deleted {len(deleted) - 1} messages.", delete_after=5)
     except discord.Forbidden:
         await ctx.send("❌ I do not have permissions to purge messages in this channel.")
