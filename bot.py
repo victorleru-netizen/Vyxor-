@@ -6,18 +6,17 @@ import sqlite3
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
-from threading import Thread  # <-- Pour le serveur web
-from flask import Flask        # <-- Pour tromper Render
+from threading import Thread
+from flask import Flask
 
-# --- Petit serveur Web pour garder Render en vie ---
+# --- Serveur Web Flask pour éviter les coupures Render ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is alive!"
+    return "Bot is alive and running!"
 
 def run_web_server():
-    # Render attribue automatiquement un port via la variable d'environnement PORT
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -25,9 +24,8 @@ def keep_alive():
     t = Thread(target=run_web_server)
     t.start()
 
-# --- Fin de la configuration du serveur Web ---
+# --- Fin de la configuration Flask ---
 
-# Load environment variables
 load_dotenv()
 
 # Database setup
@@ -205,7 +203,6 @@ async def handle_mute_and_warn(message, reason):
 @bot.command(name="welcome")
 @commands.has_permissions(manage_guild=True)
 async def welcome(ctx):
-    """Interactive setup for the welcome channel."""
     await ctx.send("📝 Please mention the channel where welcome messages should be sent (e.g., #welcome):")
     
     def check(m):
@@ -230,7 +227,6 @@ async def welcome(ctx):
 @bot.command(name="ticketconfig")
 @commands.has_permissions(manage_guild=True)
 async def ticketconfig(ctx):
-    """Interactive setup for tickets by mentioning the Category."""
     await ctx.send("📝 Please mention the **Category** where tickets should be created using `#` (e.g., #SUPPORT):")
     
     def check(m):
@@ -319,6 +315,7 @@ async def unlock(ctx):
     except discord.Forbidden:
         await ctx.send("❌ Missing permissions.")
 
+# Retour à l'ancien menu détaillé complet
 @bot.command(name="cmds")
 async def cmds(ctx):
     embed = discord.Embed(
@@ -326,12 +323,39 @@ async def cmds(ctx):
         description="Here are the commands you can use with the `!` prefix",
         color=discord.Color.blue()
     )
-    embed.add_field(name="👥 General Commands", value="`!cmds` : Help menu.", inline=False)
-    embed.add_field(name="🛡️ Moderation Commands", value="`!mute`, `!unmute`, `!kick`, `!ban`", inline=False)
-    embed.add_field(name="⚙️ Utility", value="`!lock`, `!unlock`, `!welcome`, `!ticketconfig`", inline=False)
+    
+    embed.add_field(
+        name="👥 General Commands",
+        value="`!cmds` : Displays this help menu.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🛡️ Moderation Commands",
+        value=(
+            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member (handles `10` or `10m`).\n"
+            "`!unmute <@member>` : Removes the timeout from a member.\n"
+            "`!kick <@member> [reason]` : Kicks a member from the server.\n"
+            "`!ban <@member> [reason]` : Permanently bans a member from the server."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="⚙️ Management & Utility Commands",
+        value=(
+            "`!lock` : Disables sending messages in the current channel.\n"
+            "`!unlock` : Restores message permissions in the current channel.\n"
+            "`!welcome` : Starts the interactive configuration for welcome messages.\n"
+            "`!ticketconfig` : Sets up the automated ticket panel by mentioning a Category."
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="Automated anti-spam & anti-profanity active (3 warnings = Kick)")
     await ctx.send(embed=embed)
 
-# --- Lancement combiné ---
 if __name__ == "__main__":
-    keep_alive()  # Lance le faux serveur web en arrière-plan
+    keep_alive()
     bot.run(os.getenv("DISCORD_TOKEN"))
+
