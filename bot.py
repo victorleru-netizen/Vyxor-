@@ -14,7 +14,7 @@ load_dotenv()
 conn = sqlite3.connect("warnings.db")
 cursor = conn.cursor()
 
-# Existing warnings table
+# Existing tables
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS warnings (
         user_id INTEGER PRIMARY KEY,
@@ -23,7 +23,6 @@ cursor.execute("""
     )
 """)
 
-# New table for Welcome Configuration
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS welcome_config (
         guild_id INTEGER PRIMARY KEY,
@@ -31,7 +30,6 @@ cursor.execute("""
     )
 """)
 
-# New table for Ticket Configuration
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS ticket_config (
         guild_id INTEGER PRIMARY KEY,
@@ -51,13 +49,12 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # --- Persistent Ticket View ---
 class TicketButtonView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None) # Persistent view
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.green, custom_id="create_ticket_btn", emoji="📩")
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild_id = interaction.guild.id
         
-        # Get configured category
         cursor.execute("SELECT category_id FROM ticket_config WHERE guild_id = ?", (guild_id,))
         row = cursor.fetchone()
         
@@ -72,10 +69,8 @@ class TicketButtonView(discord.ui.View):
             await interaction.response.send_message("❌ Configured ticket category not found. Please reconfigure using `!ticketconfig`.", ephemeral=True)
             return
 
-        # Create the ticket channel
         channel_name = f"ticket-{interaction.user.name}"
         
-        # Set permissions: Allow user and staff, deny @everyone
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
@@ -89,14 +84,12 @@ class TicketButtonView(discord.ui.View):
             reason=f"Ticket created by {interaction.user}"
         )
         
-        # Send initial message inside the ticket
         embed = discord.Embed(
             title="🎫 Ticket Created",
             description=f"Welcome {interaction.user.mention},\n\nSupport staff will be with you shortly. Please describe your issue in detail.",
             color=discord.Color.green()
         )
         
-        # Simple view to close the ticket
         close_view = discord.ui.View(timeout=None)
         close_button = discord.ui.Button(label="Close Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket_btn", emoji="🔒")
         
@@ -114,7 +107,6 @@ class TicketButtonView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    # Register the persistent ticket button so it works after reboots
     bot.add_view(TicketButtonView())
     print(f"Bot connected as: {bot.user}")
 
@@ -193,7 +185,7 @@ async def handle_mute_and_warn(message, reason):
         print(f"Missing permissions to take action against {message.author.name}")
 
 
-# --- Administrative, Moderation & Configuration Commands ---
+# --- Configuration & Moderation Commands ---
 
 @bot.command(name="welcome")
 @commands.has_permissions(manage_guild=True)
@@ -225,38 +217,39 @@ async def welcome(ctx):
 @bot.command(name="ticketconfig")
 @commands.has_permissions(manage_guild=True)
 async def ticketconfig(ctx):
-    """Interactive setup for tickets and button setup."""
-    await ctx.send("📝 Please provide the exact ID of the **Category** where tickets should be created:")
+    """Interactive setup for tickets by mentioning the Category."""
+    await ctx.send("📝 Please mention the **Category** where tickets should be created using `#` (e.g., #SUPPORT):")
     
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel
 
     try:
         msg = await bot.wait_for("message", check=check, timeout=30.0)
-        try:
-            category_id = int(msg.content.strip())
-            category = ctx.guild.get_channel(category_id)
+        
+        # Discord traite les mentions de catégories comme des channel_mentions
+        if msg.channel_mentions:
+            target_category = msg.channel_mentions[0]
             
-            if category and isinstance(category, discord.CategoryChannel):
+            # Vérification que c'est bien une catégorie et pas un salon textuel classique
+            if isinstance(target_category, discord.CategoryChannel):
                 cursor.execute("""
                     INSERT INTO ticket_config (guild_id, category_id) 
                     VALUES (?, ?) 
                     ON CONFLICT(guild_id) DO UPDATE SET category_id = ?
-                """, (ctx.guild.id, category_id, category_id))
+                """, (ctx.guild.id, target_category.id, target_category.id))
                 conn.commit()
                 
-                # Send the official ticket embed panel with the button
                 embed = discord.Embed(
                     title="📩 Support Tickets",
                     description="Need help? Click the button below to open a private support ticket.",
                     color=discord.Color.blurple()
                 )
                 await ctx.send(embed=embed, view=TicketButtonView())
-                await ctx.send(f"✅ Ticket system successfully configured under the **{category.name}** category.")
+                await ctx.send(f"✅ Ticket system successfully configured under the **{target_category.name}** category.")
             else:
-                await ctx.send("❌ Invalid Category ID. Make sure it's a category, not a simple text channel.")
-        except ValueError:
-            await ctx.send("❌ Invalid input. Please provide a numeric Category ID.")
+                await ctx.send("❌ Invalid selection. Please make sure to mention a **Category**, not a normal text channel.")
+        else:
+            await ctx.send("❌ Setup canceled. You didn't mention a valid category with `#`.")
     except asyncio.TimeoutError:
         await ctx.send("❌ Setup timed out. Please try running `!ticketconfig` again.")
 
@@ -358,7 +351,7 @@ async def cmds(ctx):
             "`!lock` : Disables sending messages in the current channel.\n"
             "`!unlock` : Restores message permissions in the current channel.\n"
             "`!welcome` : Starts the interactive configuration for welcome messages.\n"
-            "`!ticketconfig` : Sets up the automated ticket panel inside a chosen Category."
+            "`!ticketconfig` : Sets up the automated ticket panel by mentioning a Category."
         ),
         inline=False
     )
