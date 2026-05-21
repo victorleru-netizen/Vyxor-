@@ -97,26 +97,72 @@ async def handle_mute_and_warn(message, reason):
     except discord.Forbidden:
         print(f"Missing permissions to take action against {message.author.name}")
 
-# --- Administrative Commands ---
+
+# --- Administrative & Moderation Commands ---
 
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
-async def mute(ctx, member: discord.Member, minutes: int, *, reason: str):
-    """Mutes a member. Syntax: !mute @member minutes reason"""
+async def mute(ctx, member: discord.Member, minutes: str, *, reason: str):
+    """Mutes a member. Syntax: !mute @member minutes reason (handles '10' or '10m')"""
     try:
-        await member.timeout(timedelta(minutes=minutes), reason=reason)
-        await ctx.send(f"✅ {member.mention} has been muted for {minutes} minutes. Reason: {reason}")
+        clean_minutes = int(''.join(filter(str.isdigit, minutes)))
+        await member.timeout(timedelta(minutes=clean_minutes), reason=reason)
+        await ctx.send(f"✅ {member.mention} has been muted for {clean_minutes} minutes. Reason: {reason}")
+    except ValueError:
+        await ctx.send("❌ Invalid duration. Please provide a valid number of minutes (e.g., 10 or 10m).")
     except discord.Forbidden:
         await ctx.send("❌ I do not have permissions to timeout this member.")
 
 @bot.command(name="unmute")
 @commands.has_permissions(moderate_members=True)
 async def unmute(ctx, member: discord.Member):
+    """Removes timeout from a member."""
     try:
         await member.timeout(None)
         await ctx.send(f"✅ {member.mention} is no longer muted.")
     except discord.Forbidden:
         await ctx.send("❌ Unable to remove timeout for this member.")
+
+@bot.command(name="kick")
+@commands.has_permissions(kick_members=True)
+async def kick(ctx, member: discord.Member, *, reason: str = "No reason provided"):
+    """Kicks a member from the server."""
+    try:
+        await member.kick(reason=reason)
+        await ctx.send(f"✅ {member.mention} has been kicked. Reason: {reason}")
+    except discord.Forbidden:
+        await ctx.send("❌ I do not have permissions to kick this member.")
+
+@bot.command(name="ban")
+@commands.has_permissions(ban_members=True)
+async def ban(ctx, member: discord.Member, *, reason: str = "No reason provided"):
+    """Permanently bans a member from the server."""
+    try:
+        await member.ban(reason=reason)
+        await ctx.send(f"✅ {member.mention} has been permanently banned. Reason: {reason}")
+    except discord.Forbidden:
+        await ctx.send("❌ I do not have permissions to ban this member.")
+
+@bot.command(name="lock")
+@commands.has_permissions(manage_channels=True)
+async def lock(ctx):
+    """Locks the current text channel."""
+    try:
+        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
+        await ctx.send("🔒 This channel has been locked.")
+    except discord.Forbidden:
+        await ctx.send("❌ I do not have permissions to lock this channel.")
+
+@bot.command(name="unlock")
+@commands.has_permissions(manage_channels=True)
+async def unlock(ctx):
+    """Unlocks the current text channel."""
+    try:
+        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=None)
+        await ctx.send("🔓 This channel is now unlocked.")
+    except discord.Forbidden:
+        await ctx.send("❌ I do not have permissions to unlock this channel.")
+
 
 # --- Help Command ---
 
@@ -138,8 +184,19 @@ async def cmds(ctx):
     embed.add_field(
         name="🛡️ Moderation Commands",
         value=(
-            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member.\n"
-            "`!unmute <@member>` : Removes the timeout from a member."
+            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member (handles `10` or `10m`).\n"
+            "`!unmute <@member>` : Removes the timeout from a member.\n"
+            "`!kick <@member> [reason]` : Kicks a member from the server.\n"
+            "`!ban <@member> [reason]` : Permanently bans a member from the server."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="⚙️ Management Commands",
+        value=(
+            "`!lock` : Disables sending messages in the current channel.\n"
+            "`!unlock` : Restores message permissions in the current channel."
         ),
         inline=False
     )
