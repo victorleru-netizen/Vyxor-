@@ -13,11 +13,29 @@ load_dotenv()
 # Database setup
 conn = sqlite3.connect("warnings.db")
 cursor = conn.cursor()
+
+# Table pour les avertissements (existante)
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS warnings (
         user_id INTEGER PRIMARY KEY,
         warnings INTEGER DEFAULT 0,
         reasons TEXT
+    )
+""")
+
+# Table pour stocker le salon de bienvenue (nouvelle)
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS welcome_config (
+        guild_id INTEGER PRIMARY KEY,
+        channel_id INTEGER
+    )
+""")
+
+# Table pour stocker la catégorie des tickets (nouvelle)
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ticket_config (
+        guild_id INTEGER PRIMARY KEY,
+        category_id INTEGER
     )
 """)
 conn.commit()
@@ -28,14 +46,79 @@ INSULTES = [ r"\bidiot\b", r"\basshole\b" ]
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# --- Désactivation de l'aide par défaut de Discord ---
-bot.remove_command('help')
+
+# --- Classes pour le système de Ticket (Boutons) ---
+
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None) # timeout=None pour que le bouton reste actif après redémarrage
+
+    @discord.ui.button(label="Create a Ticket", style=discord.ButtonStyle.blue, emoji="📩", custom_id="create_ticket_btn")
+    async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        member = interaction.user
+
+        # Vérifier si une catégorie de ticket est configurée
+        cursor.execute("SELECT category_id FROM ticket_config WHERE guild_id = ?", (guild.id,))
+        row = cursor.fetchone()
+        category = guild.get_channel(row[0]) if row else None
+
+        # Permissions du salon privé de ticket
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            member: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        }
+
+        # Création du salon textuel
+        channel_name = f"ticket-{member.name}"
+        ticket_channel = await guild.create_text_channel(name=channel_name, category=category, overwrites=overwrites)
+
+        # Message à l'intérieur du ticket avec un bouton pour le fermer
+        embed = discord.Embed(
+            title="🎫 Ticket Opened",
+            description=f"Welcome {member.mention},\nOur support team will assist you shortly. Click the button below to close this ticket.",
+            color=discord.Color.green()
+        )
+        
+        await ticket_channel.send(embed=embed, view=CloseTicketView())
+        await interaction.response.send_message(f"✅ Your ticket has been created: {ticket_channel.mention}", ephemeral=True)
+
+
+class CloseTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.red, emoji="🔒", custom_id="close_ticket_btn")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🔒 This ticket will close in 5 seconds...", ephemeral=False)
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+
+# --- Événements (Events) ---
 
 @bot.event
 async def on_ready():
+    # Persistance des boutons pour qu'ils fonctionnent même si le bot redémarre
+    bot.add_view(TicketView())
+    bot.add_view(CloseTicketView())
     print(f"Bot connected as: {bot.user}")
+
+@bot.event
+async def on_member_join(member):
+    """Système de bienvenue automatique"""
+    guild = member.guild
+    cursor.execute("SELECT channel_id FROM welcome_config WHERE guild_id = ?", (guild.id,))
+    row = cursor.fetchone()
+    
+    if row:
+        channel = guild.get_channel(row[0])
+        if channel:
+            # Envoi du message en anglais avec un ping
+            await channel.send(f"👋 Welcome to the server, {member.mention}! We are glad to have you here.")
 
 @bot.event
 async def on_message(message):
@@ -88,8 +171,9 @@ async def handle_mute_and_warn(message, reason):
         await message.delete()
 
         if warnings_count >= 3:
-            await message.author.kick(reason=f"3 warnings reached: {reason}")
-            await message.channel.send(f"❌ {message.author.mention} has been **kicked** after reaching 3 warnings.")
+            await member = message.author
+            await member.kick(reason=f"3 warnings reached: {reason}")
+            await message.channel.send(f"❌ {member.mention} has been **kicked** after reaching 3 warnings.")
             cursor.execute("DELETE FROM warnings WHERE user_id = ?", (user_id,))
             conn.commit()
         else:
@@ -101,12 +185,44 @@ async def handle_mute_and_warn(message, reason):
         print(f"Missing permissions to take action against {message.author.name}")
 
 
+# --- Commandes de Configuration (Nouveau) ---
+
+@bot.command(name="welcome")
+@commands.has_permissions(manage_guild=True)
+async def welcome(ctx, channel: discord.TextChannel):
+    """Configure le salon de bienvenue. Syntaxe : !welcome #salon"""
+    cursor.execute("""
+        INSERT INTO welcome_config (guild_id, channel_id) VALUES (?, ?)
+        ON CONFLICT(guild_id) DO UPDATE SET channel_id = ?
+    """, (ctx.guild.id, channel.id, channel.id))
+    conn.commit()
+    await ctx.send(f"✅ Welcome messages will now be sent in {channel.mention}")
+
+@bot.command(name="createticket")
+@commands.has_permissions(manage_guild=True)
+async def createticket(ctx, category: discord.CategoryChannel = None):
+    """Envoie le système de ticket. Optionnel : !createticket ID_CATEGORIE"""
+    if category:
+        cursor.execute("""
+            INSERT INTO ticket_config (guild_id, category_id) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET category_id = ?
+        """, (ctx.guild.id, category.id, category.id))
+        conn.commit()
+
+    embed = discord.Embed(
+        title="📩 Support Tickets",
+        description="Need help? Click the button below to open a private support ticket.",
+        color=discord.Color.blue()
+    )
+    
+    await ctx.send(embed=embed, view=TicketView())
+
+
 # --- Administrative & Moderation Commands ---
 
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
 async def mute(ctx, member: discord.Member, minutes: str, *, reason: str):
-    """Mutes a member. Syntax: !mute @member minutes reason"""
     try:
         clean_minutes = int(''.join(filter(str.isdigit, minutes)))
         await member.timeout(timedelta(minutes=clean_minutes), reason=reason)
@@ -119,7 +235,6 @@ async def mute(ctx, member: discord.Member, minutes: str, *, reason: str):
 @bot.command(name="unmute")
 @commands.has_permissions(moderate_members=True)
 async def unmute(ctx, member: discord.Member):
-    """Removes timeout from a member."""
     try:
         await member.timeout(None)
         await ctx.send(f"✅ {member.mention} is no longer muted.")
@@ -129,7 +244,6 @@ async def unmute(ctx, member: discord.Member):
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
 async def kick(ctx, member: discord.Member, *, reason: str = "No reason provided"):
-    """Kicks a member from the server."""
     try:
         await member.kick(reason=reason)
         await ctx.send(f"✅ {member.mention} has been kicked. Reason: {reason}")
@@ -139,7 +253,6 @@ async def kick(ctx, member: discord.Member, *, reason: str = "No reason provided
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
 async def ban(ctx, member: discord.Member, *, reason: str = "No reason provided"):
-    """Permanently bans a member from the server."""
     try:
         await member.ban(reason=reason)
         await ctx.send(f"✅ {member.mention} has been permanently banned. Reason: {reason}")
@@ -149,7 +262,6 @@ async def ban(ctx, member: discord.Member, *, reason: str = "No reason provided"
 @bot.command(name="lock")
 @commands.has_permissions(manage_channels=True)
 async def lock(ctx):
-    """Locks the current text channel."""
     try:
         await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
         await ctx.send("🔒 This channel has been locked.")
@@ -159,7 +271,6 @@ async def lock(ctx):
 @bot.command(name="unlock")
 @commands.has_permissions(manage_channels=True)
 async def unlock(ctx):
-    """Unlocks the current text channel."""
     try:
         await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=None)
         await ctx.send("🔓 This channel is now unlocked.")
@@ -169,7 +280,6 @@ async def unlock(ctx):
 @bot.command(name="purge")
 @commands.has_permissions(manage_messages=True)
 async def purge(ctx, amount: int):
-    """Deletes a specified number of messages."""
     try:
         deleted = await ctx.channel.purge(limit=amount + 1)
         await ctx.send(f"🗑️ Deleted {len(deleted) - 1} messages.", delete_after=5)
@@ -179,7 +289,6 @@ async def purge(ctx, amount: int):
 @bot.command(name="slowmode")
 @commands.has_permissions(manage_channels=True)
 async def slowmode(ctx, seconds: int):
-    """Changes the slowmode delay of the current channel."""
     try:
         await ctx.channel.edit(slowmode_delay=seconds)
         if seconds == 0:
@@ -194,7 +303,6 @@ async def slowmode(ctx, seconds: int):
 
 @bot.command(name="userinfo")
 async def userinfo(ctx, member: discord.Member = None):
-    """Displays detailed information about a member."""
     member = member or ctx.author
     roles = [role.mention for role in member.roles if role != ctx.guild.default_role]
     
@@ -210,7 +318,6 @@ async def userinfo(ctx, member: discord.Member = None):
 
 @bot.command(name="serverinfo")
 async def serverinfo(ctx):
-    """Displays information about the server."""
     guild = ctx.guild
     text_channels = len(guild.text_channels)
     voice_channels = len(guild.voice_channels)
@@ -250,6 +357,15 @@ async def cmds(ctx):
     )
     
     embed.add_field(
+        name="⚙️ Configuration Commands",
+        value=(
+            "`!welcome <#channel>` : Sets the channel where welcome messages are sent.\n"
+            "`!createticket [category_id]` : Spawns the ticket creation message (optionally inside a specific category)."
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
         name="🛡️ Moderation Commands",
         value=(
             "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member.\n"
@@ -262,7 +378,7 @@ async def cmds(ctx):
     )
 
     embed.add_field(
-        name="⚙️ Management Commands",
+        name="🔧 Management Commands",
         value=(
             "`!lock` : Disables sending messages in the current channel.\n"
             "`!unlock` : Restores message permissions in the current channel.\n"
