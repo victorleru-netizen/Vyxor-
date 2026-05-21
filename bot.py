@@ -47,10 +47,12 @@ cursor.execute("""
     )
 """)
 
+# Ajout de max_tickets à la table de configuration des tickets
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS ticket_config (
         guild_id INTEGER PRIMARY KEY,
-        category_id INTEGER
+        category_id INTEGER,
+        max_tickets INTEGER DEFAULT 1
     )
 """)
 conn.commit()
@@ -71,20 +73,37 @@ class TicketButtonView(discord.ui.View):
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild_id = interaction.guild.id
         
-        cursor.execute("SELECT category_id FROM ticket_config WHERE guild_id = ?", (guild_id,))
+        cursor.execute("SELECT category_id, max_tickets FROM ticket_config WHERE guild_id = ?", (guild_id,))
         row = cursor.fetchone()
         
         if not row:
             await interaction.response.send_message("❌ Tickets are not configured yet. Please ask an admin to run `!ticketconfig`.", ephemeral=True)
             return
             
-        category_id = row[0]
+        category_id, max_tickets = row[0], row[1]
         category = interaction.guild.get_channel(category_id)
         
         if not category:
             await interaction.response.send_message("❌ Configured ticket category not found. Please reconfigure using `!ticketconfig`.", ephemeral=True)
             return
 
+        # --- Vérification de la limite de tickets par membre ---
+        user_ticket_count = 0
+        # On cherche les salons dans la catégorie des tickets qui commencent par le nom de l'utilisateur
+        expected_prefix = f"ticket-{interaction.user.name.lower()}"
+        
+        for channel in category.text_channels:
+            if channel.name.startswith(expected_prefix):
+                user_ticket_count += 1
+
+        if user_ticket_count >= max_tickets:
+            await interaction.response.send_message(
+                f"❌ You have already reached your maximum limit of tickets ({user_ticket_count}/{max_tickets}). Please close your open tickets first.", 
+                ephemeral=True
+            )
+            return
+
+        # --- Création du ticket si la limite n'est pas atteinte ---
         channel_name = f"ticket-{interaction.user.name}"
         
         overwrites = {
@@ -227,36 +246,54 @@ async def welcome(ctx):
 @bot.command(name="ticketconfig")
 @commands.has_permissions(manage_guild=True)
 async def ticketconfig(ctx):
-    await ctx.send("📝 Please mention the **Category** where tickets should be created using `#` (e.g., #SUPPORT):")
+    await ctx.send("📝 Step 1/2: Please mention the **Category** where tickets should be created using `#` (e.g., #SUPPORT):")
     
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel
 
     try:
-        msg = await bot.wait_for("message", check=check, timeout=30.0)
-        if msg.channel_mentions:
-            target_category = msg.channel_mentions[0]
-            if isinstance(target_category, discord.CategoryChannel):
-                cursor.execute("""
-                    INSERT INTO ticket_config (guild_id, category_id) 
-                    VALUES (?, ?) 
-                    ON CONFLICT(guild_id) DO UPDATE SET category_id = ?
-                """, (ctx.guild.id, target_category.id, target_category.id))
-                conn.commit()
-                
-                embed = discord.Embed(
-                    title="📩 Support Tickets",
-                    description="Need help? Click the button below to open a private support ticket.",
-                    color=discord.Color.blurple()
-                )
-                await ctx.send(embed=embed, view=TicketButtonView())
-                await ctx.send(f"✅ Ticket system successfully configured under the **{target_category.name}** category.")
-            else:
-                await ctx.send("❌ Invalid selection. Please make sure to mention a **Category**.")
-        else:
-            await ctx.send("❌ Setup canceled.")
+        # Étape 1 : Demande de la catégorie
+        msg_cat = await bot.wait_for("message", check=check, timeout=30.0)
+        if not msg_cat.channel_mentions:
+            await ctx.send("❌ Setup canceled. You didn't mention a valid category with `#`.")
+            return
+            
+        target_category = msg_cat.channel_mentions[0]
+        if not isinstance(target_category, discord.CategoryChannel):
+            await ctx.send("❌ Invalid selection. Please make sure to mention a **Category**.")
+            return
+
+        # Étape 2 : Demande du nombre maximal de tickets
+        await ctx.send("🔢 Step 2/2: Enter the maximum number of tickets a member can open at the same time (e.g., 1 or 2):")
+        msg_max = await bot.wait_for("message", check=check, timeout=30.0)
+        
+        try:
+            max_tickets = int(msg_max.content.strip())
+            if max_tickets <= 0:
+                await ctx.send("❌ Please enter a number greater than 0. Setup canceled.")
+                return
+        except ValueError:
+            await ctx.send("❌ Invalid input. Please enter a proper number. Setup canceled.")
+            return
+
+        # Enregistrement en base de données
+        cursor.execute("""
+            INSERT INTO ticket_config (guild_id, category_id, max_tickets) 
+            VALUES (?, ?, ?) 
+            ON CONFLICT(guild_id) DO UPDATE SET category_id = ?, max_tickets = ?
+        """, (ctx.guild.id, target_category.id, max_tickets, target_category.id, max_tickets))
+        conn.commit()
+        
+        embed = discord.Embed(
+            title="📩 Support Tickets",
+            description=f"Need help? Click the button below to open a private support ticket.\n*(Limit: {max_tickets} active ticket(s) per user)*",
+            color=discord.Color.blurple()
+        )
+        await ctx.send(embed=embed, view=TicketButtonView())
+        await ctx.send(f"✅ Ticket system successfully configured under **{target_category.name}** with a limit of **{max_tickets}** ticket(s) per user.")
+
     except asyncio.TimeoutError:
-        await ctx.send("❌ Setup timed out.")
+        await ctx.send("❌ Setup timed out. Please try running `!ticketconfig` again.")
 
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
@@ -315,7 +352,6 @@ async def unlock(ctx):
     except discord.Forbidden:
         await ctx.send("❌ Missing permissions.")
 
-# Retour à l'ancien menu détaillé complet
 @bot.command(name="cmds")
 async def cmds(ctx):
     embed = discord.Embed(
@@ -347,7 +383,7 @@ async def cmds(ctx):
             "`!lock` : Disables sending messages in the current channel.\n"
             "`!unlock` : Restores message permissions in the current channel.\n"
             "`!welcome` : Starts the interactive configuration for welcome messages.\n"
-            "`!ticketconfig` : Sets up the automated ticket panel by mentioning a Category."
+            "`!ticketconfig` : Sets up the automated ticket panel with custom limits by mentioning a Category."
         ),
         inline=False
     )
