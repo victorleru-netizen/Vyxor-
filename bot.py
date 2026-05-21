@@ -6,6 +6,26 @@ import sqlite3
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+from threading import Thread  # <-- Pour le serveur web
+from flask import Flask        # <-- Pour tromper Render
+
+# --- Petit serveur Web pour garder Render en vie ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_web_server():
+    # Render attribue automatiquement un port via la variable d'environnement PORT
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web_server)
+    t.start()
+
+# --- Fin de la configuration du serveur Web ---
 
 # Load environment variables
 load_dotenv()
@@ -14,7 +34,6 @@ load_dotenv()
 conn = sqlite3.connect("warnings.db")
 cursor = conn.cursor()
 
-# Existing tables
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS warnings (
         user_id INTEGER PRIMARY KEY,
@@ -46,7 +65,6 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- Persistent Ticket View ---
 class TicketButtonView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -110,7 +128,6 @@ async def on_ready():
     bot.add_view(TicketButtonView())
     print(f"Bot connected as: {bot.user}")
 
-# --- Welcome Event ---
 @bot.event
 async def on_member_join(member):
     cursor.execute("SELECT channel_id FROM welcome_config WHERE guild_id = ?", (member.guild.id,))
@@ -133,7 +150,6 @@ async def on_message(message):
     user_id = message.author.id
     current_time = datetime.now()
 
-    # --- Spam Detection ---
     if user_id not in user_messages:
         user_messages[user_id] = []
     user_messages[user_id].append(current_time)
@@ -144,7 +160,6 @@ async def on_message(message):
         await handle_mute_and_warn(message, "Spam detected (4 messages in 15 sec)")
         return
 
-    # --- Auto Profanity Detection ---
     contenu = message.content.lower()
     for insulte in INSULTES:
         if re.search(insulte, contenu):
@@ -185,7 +200,7 @@ async def handle_mute_and_warn(message, reason):
         print(f"Missing permissions to take action against {message.author.name}")
 
 
-# --- Configuration & Moderation Commands ---
+# --- Commands ---
 
 @bot.command(name="welcome")
 @commands.has_permissions(manage_guild=True)
@@ -200,19 +215,17 @@ async def welcome(ctx):
         msg = await bot.wait_for("message", check=check, timeout=30.0)
         if msg.channel_mentions:
             target_channel = msg.channel_mentions[0]
-            
             cursor.execute("""
                 INSERT INTO welcome_config (guild_id, channel_id) 
                 VALUES (?, ?) 
                 ON CONFLICT(guild_id) DO UPDATE SET channel_id = ?
             """, (ctx.guild.id, target_channel.id, target_channel.id))
             conn.commit()
-            
             await ctx.send(f"✅ Welcome messages will now be sent to {target_channel.mention} in English.")
         else:
             await ctx.send("❌ Setup canceled. You didn't mention a valid text channel.")
     except asyncio.TimeoutError:
-        await ctx.send("❌ Setup timed out. Please try running `!welcome` again.")
+        await ctx.send("❌ Setup timed out.")
 
 @bot.command(name="ticketconfig")
 @commands.has_permissions(manage_guild=True)
@@ -225,12 +238,8 @@ async def ticketconfig(ctx):
 
     try:
         msg = await bot.wait_for("message", check=check, timeout=30.0)
-        
-        # Discord traite les mentions de catégories comme des channel_mentions
         if msg.channel_mentions:
             target_category = msg.channel_mentions[0]
-            
-            # Vérification que c'est bien une catégorie et pas un salon textuel classique
             if isinstance(target_category, discord.CategoryChannel):
                 cursor.execute("""
                     INSERT INTO ticket_config (guild_id, category_id) 
@@ -247,117 +256,82 @@ async def ticketconfig(ctx):
                 await ctx.send(embed=embed, view=TicketButtonView())
                 await ctx.send(f"✅ Ticket system successfully configured under the **{target_category.name}** category.")
             else:
-                await ctx.send("❌ Invalid selection. Please make sure to mention a **Category**, not a normal text channel.")
+                await ctx.send("❌ Invalid selection. Please make sure to mention a **Category**.")
         else:
-            await ctx.send("❌ Setup canceled. You didn't mention a valid category with `#`.")
+            await ctx.send("❌ Setup canceled.")
     except asyncio.TimeoutError:
-        await ctx.send("❌ Setup timed out. Please try running `!ticketconfig` again.")
+        await ctx.send("❌ Setup timed out.")
 
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
 async def mute(ctx, member: discord.Member, minutes: str, *, reason: str):
-    """Mutes a member. Syntax: !mute @member minutes reason"""
     try:
         clean_minutes = int(''.join(filter(str.isdigit, minutes)))
         await member.timeout(timedelta(minutes=clean_minutes), reason=reason)
         await ctx.send(f"✅ {member.mention} has been muted for {clean_minutes} minutes. Reason: {reason}")
     except ValueError:
-        await ctx.send("❌ Invalid duration. Please provide a valid number of minutes (e.g., 10 or 10m).")
+        await ctx.send("❌ Invalid duration.")
     except discord.Forbidden:
-        await ctx.send("❌ I do not have permissions to timeout this member.")
+        await ctx.send("❌ Missing permissions.")
 
 @bot.command(name="unmute")
 @commands.has_permissions(moderate_members=True)
 async def unmute(ctx, member: discord.Member):
-    """Removes timeout from a member."""
     try:
         await member.timeout(None, reason="Unmuted via command")
         await ctx.send(f"✅ {member.mention} is no longer muted.")
     except discord.Forbidden:
-        await ctx.send("❌ Unable to remove timeout for this member.")
+        await ctx.send("❌ Unable to remove timeout.")
 
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
 async def kick(ctx, member: discord.Member, *, reason: str = "No reason provided"):
-    """Kicks a member from the server."""
     try:
         await member.kick(reason=reason)
         await ctx.send(f"✅ {member.mention} has been kicked. Reason: {reason}")
     except discord.Forbidden:
-        await ctx.send("❌ I do not have permissions to kick this member.")
+        await ctx.send("❌ Missing permissions.")
 
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
 async def ban(ctx, member: discord.Member, *, reason: str = "No reason provided"):
-    """Permanently bans a member from the server."""
     try:
         await member.ban(reason=reason)
         await ctx.send(f"✅ {member.mention} has been permanently banned. Reason: {reason}")
     except discord.Forbidden:
-        await ctx.send("❌ I do not have permissions to ban this member.")
+        await ctx.send("❌ Missing permissions.")
 
 @bot.command(name="lock")
 @commands.has_permissions(manage_channels=True)
 async def lock(ctx):
-    """Locks the current text channel."""
     try:
         await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
         await ctx.send("🔒 This channel has been locked.")
     except discord.Forbidden:
-        await ctx.send("❌ I do not have permissions to lock this channel.")
+        await ctx.send("❌ Missing permissions.")
 
 @bot.command(name="unlock")
 @commands.has_permissions(manage_channels=True)
 async def unlock(ctx):
-    """Unlocks the current text channel."""
     try:
         await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=None)
         await ctx.send("🔓 This channel is now unlocked.")
     except discord.Forbidden:
-        await ctx.send("❌ I do not have permissions to unlock this channel.")
-
-
-# --- Help Command ---
+        await ctx.send("❌ Missing permissions.")
 
 @bot.command(name="cmds")
 async def cmds(ctx):
-    """Displays the list of all available commands on the server."""
     embed = discord.Embed(
         title="📜 Server Commands List",
         description="Here are the commands you can use with the `!` prefix",
         color=discord.Color.blue()
     )
-    
-    embed.add_field(
-        name="👥 General Commands",
-        value="`!cmds` : Displays this help menu.",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="🛡️ Moderation Commands",
-        value=(
-            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member (handles `10` or `10m`).\n"
-            "`!unmute <@member>` : Removes the timeout from a member.\n"
-            "`!kick <@member> [reason]` : Kicks a member from the server.\n"
-            "`!ban <@member> [reason]` : Permanently bans a member from the server."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="⚙️ Management & Utility Commands",
-        value=(
-            "`!lock` : Disables sending messages in the current channel.\n"
-            "`!unlock` : Restores message permissions in the current channel.\n"
-            "`!welcome` : Starts the interactive configuration for welcome messages.\n"
-            "`!ticketconfig` : Sets up the automated ticket panel by mentioning a Category."
-        ),
-        inline=False
-    )
-    
-    embed.set_footer(text="Automated anti-spam & anti-profanity active (3 warnings = Kick)")
-    
+    embed.add_field(name="👥 General Commands", value="`!cmds` : Help menu.", inline=False)
+    embed.add_field(name="🛡️ Moderation Commands", value="`!mute`, `!unmute`, `!kick`, `!ban`", inline=False)
+    embed.add_field(name="⚙️ Utility", value="`!lock`, `!unlock`, `!welcome`, `!ticketconfig`", inline=False)
     await ctx.send(embed=embed)
 
-bot.run(os.getenv("DISCORD_TOKEN"))
+# --- Lancement combiné ---
+if __name__ == "__main__":
+    keep_alive()  # Lance le faux serveur web en arrière-plan
+    bot.run(os.getenv("DISCORD_TOKEN"))
