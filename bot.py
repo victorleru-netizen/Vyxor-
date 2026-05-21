@@ -3,10 +3,14 @@ from discord.ext import commands
 import asyncio
 import re
 import sqlite3
-import os
 from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
 
-# Base de données
+# Load environment variables
+load_dotenv()
+
+# Database setup
 conn = sqlite3.connect("warnings.db")
 cursor = conn.cursor()
 cursor.execute("""
@@ -18,10 +22,8 @@ cursor.execute("""
 """)
 conn.commit()
 
-# Limitation du spam
 user_messages = {}
-
-INSULTES = [ r"\bidiot\b", r"\bcon\b" ] # Écourtée pour l'exemple
+INSULTES = [ r"\bidiot\b", r"\basshole\b" ] 
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -30,7 +32,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"Bot connecté en tant que : {bot.user}")
+    print(f"Bot connected as: {bot.user}")
 
 @bot.event
 async def on_message(message):
@@ -44,7 +46,7 @@ async def on_message(message):
     user_id = message.author.id
     current_time = datetime.now()
 
-    # --- Détection de spam ---
+    # --- Spam Detection ---
     if user_id not in user_messages:
         user_messages[user_id] = []
     user_messages[user_id].append(current_time)
@@ -52,14 +54,14 @@ async def on_message(message):
 
     if len(user_messages[user_id]) > 4:
         user_messages[user_id] = []
-        await handle_mute_and_warn(message, "Spam détecté (4 messages en 15 sec)")
+        await handle_mute_and_warn(message, "Spam detected (4 messages in 15 sec)")
         return
 
-    # --- Détection automatique des insultes ---
+    # --- Auto Profanity Detection ---
     contenu = message.content.lower()
     for insulte in INSULTES:
         if re.search(insulte, contenu):
-            await handle_mute_and_warn(message, "Propos inappropriés")
+            await handle_mute_and_warn(message, "Inappropriate language")
             return
 
     await bot.process_commands(message)
@@ -83,119 +85,67 @@ async def handle_mute_and_warn(message, reason):
         await message.delete()
 
         if warnings_count >= 3:
-            await message.author.kick(reason=f"3 avertissements : {reason}")
-            await message.channel.send(f"❌ {message.author.mention} a été **kick** après 3 avertissements.")
+            await message.author.kick(reason=f"3 warnings reached: {reason}")
+            await message.channel.send(f"❌ {message.author.mention} has been **kicked** after reaching 3 warnings.")
             cursor.execute("DELETE FROM warnings WHERE user_id = ?", (user_id,))
             conn.commit()
         else:
             await message.author.timeout(timedelta(minutes=10), reason=reason)
             await message.channel.send(
-                f"⚠️ {message.author.mention} a été exclu temporairement (10 min). Raison : {reason} ({warnings_count}/3)"
+                f"⚠️ {message.author.mention} has been timed out (10 min). Reason: {reason} ({warnings_count}/3)"
             )
     except discord.Forbidden:
-        print(f"Permissions insuffisantes pour agir contre {message.author.name}")
+        print(f"Missing permissions to take action against {message.author.name}")
 
-# --- Commandes administratives ---
+# --- Administrative Commands ---
 
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
-async def mute(ctx, member: discord.Member, minutes: int = 10, *, reason="Aucune raison"):
+async def mute(ctx, member: discord.Member, minutes: int, *, reason: str):
+    """Mutes a member. Syntax: !mute @member minutes reason"""
     try:
         await member.timeout(timedelta(minutes=minutes), reason=reason)
-        await ctx.send(f"✅ {member.mention} a été réduit au silence pour {minutes} minutes.")
+        await ctx.send(f"✅ {member.mention} has been muted for {minutes} minutes. Reason: {reason}")
     except discord.Forbidden:
-        await ctx.send("❌ Je n'ai pas les permissions pour exclure ce membre.")
+        await ctx.send("❌ I do not have permissions to timeout this member.")
 
 @bot.command(name="unmute")
 @commands.has_permissions(moderate_members=True)
 async def unmute(ctx, member: discord.Member):
     try:
         await member.timeout(None)
-        await ctx.send(f"✅ {member.mention} n'est plus réduit au silence.")
+        await ctx.send(f"✅ {member.mention} is no longer muted.")
     except discord.Forbidden:
-        await ctx.send("❌ Impossible d'annuler l'exclusion.")
+        await ctx.send("❌ Unable to remove timeout for this member.")
 
-@bot.command(name="kick")
-@commands.has_permissions(kick_members=True)
-async def kick(ctx, member: discord.Member, *, reason="Aucune raison"):
-    """Expulse un membre du serveur."""
-    try:
-        await member.kick(reason=reason)
-        await ctx.send(f"👢 {member.mention} a été **expulsé** du serveur. Raison : {reason}")
-    except discord.Forbidden:
-        await ctx.send("❌ Je n'ai pas les permissions nécessaires pour expulser ce membre (vérifie la hiérarchie de mes rôles).")
-
-@bot.command(name="ban")
-@commands.has_permissions(ban_members=True)
-async def ban(ctx, member: discord.Member, *, reason="Aucune raison"):
-    """Bannit définitivement un membre du serveur."""
-    try:
-        await member.ban(reason=reason)
-        await ctx.send(f"🔨 {member.mention} a été **banni définitivement** du serveur. Raison : {reason}")
-    except discord.Forbidden:
-        await ctx.send("❌ Je n'ai pas les permissions nécessaires pour bannir ce membre (vérifie la hiérarchie de mes rôles).")
-
-@bot.command(name="lock")
-@commands.has_permissions(manage_channels=True)
-async def lock(ctx):
-    """Bloque le salon textuel actuel."""
-    try:
-        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
-        await ctx.send("🔒 Ce salon a été fermé par la modération.")
-    except discord.Forbidden:
-        await ctx.send("❌ Je n'ai pas la permission de modifier ce salon.")
-
-@bot.command(name="unlock")
-@commands.has_permissions(manage_channels=True)
-async def unlock(ctx):
-    """Débloque le salon textuel actuel."""
-    try:
-        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
-        await ctx.send("🔓 Ce salon est de nouveau ouvert.")
-    except discord.Forbidden:
-        await ctx.send("❌ Je n'ai pas la permission de modifier ce salon.")
-
-# --- Commande d'aide mise à jour ---
+# --- Help Command ---
 
 @bot.command(name="cmds")
 async def cmds(ctx):
-    """Affiche la liste de toutes les commandes disponibles sur le serveur."""
+    """Displays the list of all available commands on the server."""
     embed = discord.Embed(
-        title="📜 Liste des commandes du serveur",
-        description="Voici les commandes que vous pouvez utiliser avec le préfixe `!`",
+        title="📜 Server Commands List",
+        description="Here are the commands you can use with the `!` prefix",
         color=discord.Color.blue()
     )
     
     embed.add_field(
-        name="👥 Commandes Générales",
-        value="`!cmds` : Affiche cette liste d'aide.",
+        name="👥 General Commands",
+        value="`!cmds` : Displays this help menu.",
         inline=False
     )
     
     embed.add_field(
-        name="🛡️ Commandes de Modération",
+        name="🛡️ Moderation Commands",
         value=(
-            "`!mute <@membre> [minutes] [raison]` : Exclut temporairement un membre.\n"
-            "`!unmute <@membre>` : Annule l'exclusion d'un membre.\n"
-            "`!kick <@membre> [raison]` : Expulse un membre du serveur.\n"
-            "`!ban <@membre> [raison]` : Bannit définitivement un membre.\n"
-            "`!lock` : Ferme temporairement le salon actuel.\n"
-            "`!unlock` : Réouvre le salon actuel."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🤖 Systèmes Automatiques",
-        value=(
-            "🛡️ **Anti-Spam** : S'active après 4 messages en 15 secondes.\n"
-            "🤬 **Anti-Insultes** : Supprime automatiquement les grossièretés."
+            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member.\n"
+            "`!unmute <@member>` : Removes the timeout from a member."
         ),
         inline=False
     )
     
-    embed.set_footer(text="Système Vyxor actif — 3 avertissements = Kick automatique")
+    embed.set_footer(text="Automated anti-spam & anti-profanity active (3 warnings = Kick)")
+    
     await ctx.send(embed=embed)
 
-# Utilisation de la variable d'environnement configurée sur Render
-bot.run(os.environ.get("DISCORD_TOKEN"))
+bot.run(os.getenv("DISCORD_TOKEN"))
