@@ -43,16 +43,20 @@ cursor.execute("""
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS welcome_config (
         guild_id INTEGER PRIMARY KEY,
-        channel_id INTEGER
+        channel_id INTEGER,
+        custom_message TEXT
     )
 """)
 
-# Ajout de max_tickets à la table de configuration des tickets
+# Mise à jour de la table ticket pour ajouter le rôle à ping et l'option de ping membre
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS ticket_config (
         guild_id INTEGER PRIMARY KEY,
         category_id INTEGER,
-        max_tickets INTEGER DEFAULT 1
+        max_tickets INTEGER DEFAULT 1,
+        custom_description TEXT,
+        ping_role_id INTEGER,
+        ping_member INTEGER DEFAULT 1
     )
 """)
 conn.commit()
@@ -73,23 +77,22 @@ class TicketButtonView(discord.ui.View):
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild_id = interaction.guild.id
         
-        cursor.execute("SELECT category_id, max_tickets FROM ticket_config WHERE guild_id = ?", (guild_id,))
+        cursor.execute("SELECT category_id, max_tickets, ping_role_id, ping_member FROM ticket_config WHERE guild_id = ?", (guild_id,))
         row = cursor.fetchone()
         
         if not row:
             await interaction.response.send_message("❌ Tickets are not configured yet. Please ask an admin to run `!ticketconfig`.", ephemeral=True)
             return
             
-        category_id, max_tickets = row[0], row[1]
+        category_id, max_tickets, ping_role_id, ping_member = row[0], row[1], row[2], row[3]
         category = interaction.guild.get_channel(category_id)
         
         if not category:
             await interaction.response.send_message("❌ Configured ticket category not found. Please reconfigure using `!ticketconfig`.", ephemeral=True)
             return
 
-        # --- Vérification de la limite de tickets par membre ---
+        # Vérification de la limite de tickets par membre
         user_ticket_count = 0
-        # On cherche les salons dans la catégorie des tickets qui commencent par le nom de l'utilisateur
         expected_prefix = f"ticket-{interaction.user.name.lower()}"
         
         for channel in category.text_channels:
@@ -103,7 +106,7 @@ class TicketButtonView(discord.ui.View):
             )
             return
 
-        # --- Création du ticket si la limite n'est pas atteinte ---
+        # Création du ticket
         channel_name = f"ticket-{interaction.user.name}"
         
         overwrites = {
@@ -119,6 +122,19 @@ class TicketButtonView(discord.ui.View):
             reason=f"Ticket created by {interaction.user}"
         )
         
+        # --- Gestion des mentions et Pings dans le ticket ---
+        ping_content = ""
+        
+        # Si un rôle spécifique a été configuré
+        if ping_role_id:
+            role = interaction.guild.get_role(ping_role_id)
+            if role:
+                ping_content += f"{role.mention} "
+        
+        # Si l'option de ping de l'utilisateur est activée (1 = oui, 0 = non)
+        if ping_member == 1:
+            ping_content += f"{interaction.user.mention}"
+            
         embed = discord.Embed(
             title="🎫 Ticket Created",
             description=f"Welcome {interaction.user.mention},\n\nSupport staff will be with you shortly. Please describe your issue in detail.",
@@ -136,7 +152,12 @@ class TicketButtonView(discord.ui.View):
         close_button.callback = close_callback
         close_view.add_item(close_button)
         
-        await ticket_channel.send(embed=embed, view=close_view)
+        # Envoi de l'embed et du message contenant les pings configurés
+        if ping_content.strip():
+            await ticket_channel.send(content=ping_content, embed=embed, view=close_view)
+        else:
+            await ticket_channel.send(embed=embed, view=close_view)
+            
         await interaction.response.send_message(f"✅ Ticket created! Go to {ticket_channel.mention}", ephemeral=True)
 
 
@@ -147,13 +168,18 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
-    cursor.execute("SELECT channel_id FROM welcome_config WHERE guild_id = ?", (member.guild.id,))
+    cursor.execute("SELECT channel_id, custom_message FROM welcome_config WHERE guild_id = ?", (member.guild.id,))
     row = cursor.fetchone()
     if row:
-        channel_id = row[0]
+        channel_id, custom_message = row[0], row[1]
         channel = member.guild.get_channel(channel_id)
         if channel:
-            await channel.send(f"👋 Welcome to the server, {member.mention}! We are glad to have you here! 🎉")
+            if custom_message:
+                formatted_message = custom_message.replace("{member}", member.mention)
+            else:
+                formatted_message = f"👋 Welcome to the server, {member.mention}! 🎉"
+                
+            await channel.send(formatted_message)
 
 @bot.event
 async def on_message(message):
@@ -222,75 +248,119 @@ async def handle_mute_and_warn(message, reason):
 @bot.command(name="welcome")
 @commands.has_permissions(manage_guild=True)
 async def welcome(ctx):
-    await ctx.send("📝 Please mention the channel where welcome messages should be sent (e.g., #welcome):")
+    await ctx.send("📝 **Step 1/2:** Please mention the channel where welcome messages should be sent (e.g., #welcome):")
     
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel
 
     try:
-        msg = await bot.wait_for("message", check=check, timeout=30.0)
-        if msg.channel_mentions:
-            target_channel = msg.channel_mentions[0]
-            cursor.execute("""
-                INSERT INTO welcome_config (guild_id, channel_id) 
-                VALUES (?, ?) 
-                ON CONFLICT(guild_id) DO UPDATE SET channel_id = ?
-            """, (ctx.guild.id, target_channel.id, target_channel.id))
-            conn.commit()
-            await ctx.send(f"✅ Welcome messages will now be sent to {target_channel.mention} in English.")
-        else:
+        msg_chan = await bot.wait_for("message", check=check, timeout=45.0)
+        if not msg_chan.channel_mentions:
             await ctx.send("❌ Setup canceled. You didn't mention a valid text channel.")
+            return
+        target_channel = msg_chan.channel_mentions[0]
+
+        await ctx.send(
+            "✍️ **Step 2/2:** Type the custom welcome message you want the bot to send.\n"
+            "*Tip: Use `{member}` in your text where you want the bot to tag the new user!*"
+        )
+        msg_text = await bot.wait_for("message", check=check, timeout=60.0)
+        custom_msg = msg_text.content
+
+        cursor.execute("""
+            INSERT INTO welcome_config (guild_id, channel_id, custom_message) 
+            VALUES (?, ?, ?) 
+            ON CONFLICT(guild_id) DO UPDATE SET channel_id = ?, custom_message = ?
+        """, (ctx.guild.id, target_channel.id, custom_msg, target_channel.id, custom_msg))
+        conn.commit()
+
+        preview = custom_msg.replace("{member}", ctx.author.mention)
+        await ctx.send(f"✅ **Welcome system successfully configured!**\nSent to: {target_channel.mention}\n\n**Preview:**\n{preview}")
+
     except asyncio.TimeoutError:
         await ctx.send("❌ Setup timed out.")
 
 @bot.command(name="ticketconfig")
 @commands.has_permissions(manage_guild=True)
 async def ticketconfig(ctx):
-    await ctx.send("📝 Step 1/2: Please mention the **Category** where tickets should be created using `#` (e.g., #SUPPORT):")
-    
+    """Configuration interactive par étapes pour les tickets."""
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel
 
     try:
-        # Étape 1 : Demande de la catégorie
+        # Étape 1 : Choix de la catégorie
+        await ctx.send("📝 **Step 1/5:** Please mention the **Category** where tickets should be created using `#` (e.g., #SUPPORT):")
         msg_cat = await bot.wait_for("message", check=check, timeout=30.0)
         if not msg_cat.channel_mentions:
-            await ctx.send("❌ Setup canceled. You didn't mention a valid category with `#`.")
+            await ctx.send("❌ Setup canceled. You didn't mention a valid category.")
             return
-            
         target_category = msg_cat.channel_mentions[0]
         if not isinstance(target_category, discord.CategoryChannel):
             await ctx.send("❌ Invalid selection. Please make sure to mention a **Category**.")
             return
 
-        # Étape 2 : Demande du nombre maximal de tickets
-        await ctx.send("🔢 Step 2/2: Enter the maximum number of tickets a member can open at the same time (e.g., 1 or 2):")
+        # Étape 2 : Nombre max de tickets
+        await ctx.send("🔢 **Step 2/5:** Enter the maximum number of tickets a member can open at the same time (e.g., 1 or 2):")
         msg_max = await bot.wait_for("message", check=check, timeout=30.0)
-        
         try:
             max_tickets = int(msg_max.content.strip())
             if max_tickets <= 0:
                 await ctx.send("❌ Please enter a number greater than 0. Setup canceled.")
                 return
         except ValueError:
-            await ctx.send("❌ Invalid input. Please enter a proper number. Setup canceled.")
+            await ctx.send("❌ Invalid input. Setup canceled.")
             return
+
+        # Étape 3 : Rôle du Staff à pinguer
+        await ctx.send("🛡️ **Step 3/5:** Mention the **Role** you want to ping when a new ticket opens (e.g., @Staff), or type `none`:")
+        msg_role = await bot.wait_for("message", check=check, timeout=30.0)
+        ping_role_id = None
+        
+        if msg_role.content.strip().lower() != "none":
+            if msg_role.role_mentions:
+                ping_role_id = msg_role.role_mentions[0].id
+            else:
+                await ctx.send("❌ No valid role mentioned. Setup canceled.")
+                return
+
+        # Étape 4 : Pinguer le membre ou non
+        await ctx.send("🔔 **Step 4/5:** Do you want to ping the member who opened the ticket inside their new channel? Type `yes` or `no`:")
+        msg_ping_member = await bot.wait_for("message", check=check, timeout=30.0)
+        user_choice = msg_ping_member.content.strip().lower()
+        
+        if user_choice in ["yes", "y", "oui"]:
+            ping_member_val = 1
+        elif user_choice in ["no", "n", "non"]:
+            ping_member_val = 0
+        else:
+            await ctx.send("❌ Invalid answer (type yes or no). Setup canceled.")
+            return
+
+        # Étape 5 : Description du panneau d'Embed
+        await ctx.send("🎨 **Step 5/5:** Type the custom message description for your ticket panel:")
+        msg_desc = await bot.wait_for("message", check=check, timeout=60.0)
+        custom_description = msg_desc.content
 
         # Enregistrement en base de données
         cursor.execute("""
-            INSERT INTO ticket_config (guild_id, category_id, max_tickets) 
-            VALUES (?, ?, ?) 
-            ON CONFLICT(guild_id) DO UPDATE SET category_id = ?, max_tickets = ?
-        """, (ctx.guild.id, target_category.id, max_tickets, target_category.id, max_tickets))
+            INSERT INTO ticket_config (guild_id, category_id, max_tickets, custom_description, ping_role_id, ping_member) 
+            VALUES (?, ?, ?, ?, ?, ?) 
+            ON CONFLICT(guild_id) DO UPDATE SET 
+                category_id = ?, max_tickets = ?, custom_description = ?, ping_role_id = ?, ping_member = ?
+        """, (ctx.guild.id, target_category.id, max_tickets, custom_description, ping_role_id, ping_member_val,
+              target_category.id, max_tickets, custom_description, ping_role_id, ping_member_val))
         conn.commit()
         
+        # Envoi de l'Embed final généré sur-mesure
         embed = discord.Embed(
             title="📩 Support Tickets",
-            description=f"Need help? Click the button below to open a private support ticket.\n*(Limit: {max_tickets} active ticket(s) per user)*",
+            description=custom_description,
             color=discord.Color.blurple()
         )
+        embed.set_footer(text=f"Limit: {max_tickets} active ticket(s) per user")
+        
         await ctx.send(embed=embed, view=TicketButtonView())
-        await ctx.send(f"✅ Ticket system successfully configured under **{target_category.name}** with a limit of **{max_tickets}** ticket(s) per user.")
+        await ctx.send(f"✅ **Ticket system successfully configured** under **{target_category.name}**.")
 
     except asyncio.TimeoutError:
         await ctx.send("❌ Setup timed out. Please try running `!ticketconfig` again.")
@@ -369,10 +439,10 @@ async def cmds(ctx):
     embed.add_field(
         name="🛡️ Moderation Commands",
         value=(
-            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member (handles `10` or `10m`).\n"
+            "`!mute <@member> <minutes> <reason>` : Temporarily mutes a member.\n"
             "`!unmute <@member>` : Removes the timeout from a member.\n"
-            "`!kick <@member> [reason]` : Kicks a member from the server.\n"
-            "`!ban <@member> [reason]` : Permanently bans a member from the server."
+            "`!kick <@member> [reason]` : Kicks a member.\n"
+            "`!ban <@member> [reason]` : Permanently bans a member."
         ),
         inline=False
     )
@@ -381,9 +451,9 @@ async def cmds(ctx):
         name="⚙️ Management & Utility Commands",
         value=(
             "`!lock` : Disables sending messages in the current channel.\n"
-            "`!unlock` : Restores message permissions in the current channel.\n"
-            "`!welcome` : Starts the interactive configuration for welcome messages.\n"
-            "`!ticketconfig` : Sets up the automated ticket panel with custom limits by mentioning a Category."
+            "`!unlock` : Restores message permissions.\n"
+            "`!welcome` : Starts the interactive setup for fully custom welcome messages.\n"
+            "`!ticketconfig` : Sets up the ticket panel with custom texts, limits, and roles/member pings."
         ),
         inline=False
     )
@@ -394,4 +464,3 @@ async def cmds(ctx):
 if __name__ == "__main__":
     keep_alive()
     bot.run(os.getenv("DISCORD_TOKEN"))
-
